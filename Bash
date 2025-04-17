@@ -1,0 +1,4 @@
+cd backend
+npm install
+node server.js
+# Server should say “MongoDB Connected” and “Server running on http://localhost:5000”
