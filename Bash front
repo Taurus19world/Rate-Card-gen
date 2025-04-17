@@ -1,0 +1,4 @@
+cd ../frontend
+npm install
+npm start
+# Frontend will open at http://localhost:3000
