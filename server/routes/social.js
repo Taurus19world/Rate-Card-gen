@@ -12,7 +12,9 @@ router.get('/youtube/stats/:channelId', authenticateToken, async (req, res) => {
     const apiKey = process.env.YOUTUBE_API_KEY;
     
     if (!apiKey) {
-      return res.status(500).json({ message: 'YouTube API key not configured' });
+      return res.status(500).json({ 
+        message: 'YouTube API key not configured. Please add your YouTube API key to the server environment variables.' 
+      });
     }
 
     // Get channel statistics
@@ -21,7 +23,7 @@ router.get('/youtube/stats/:channelId', authenticateToken, async (req, res) => {
     );
 
     if (!channelResponse.data.items.length) {
-      return res.status(404).json({ message: 'Channel not found' });
+      return res.status(404).json({ message: 'Channel not found. Please check your Channel ID.' });
     }
 
     const channel = channelResponse.data.items[0];
@@ -34,18 +36,25 @@ router.get('/youtube/stats/:channelId', authenticateToken, async (req, res) => {
 
     const videoIds = videosResponse.data.items.map(item => item.id.videoId).join(',');
     
-    const videoStatsResponse = await axios.get(
-      `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoIds}&key=${apiKey}`
-    );
-
-    // Calculate average engagement rate
-    const videos = videoStatsResponse.data.items;
-    const totalViews = videos.reduce((sum, video) => sum + parseInt(video.statistics.viewCount || 0), 0);
-    const totalLikes = videos.reduce((sum, video) => sum + parseInt(video.statistics.likeCount || 0), 0);
-    const totalComments = videos.reduce((sum, video) => sum + parseInt(video.statistics.commentCount || 0), 0);
+    let avgEngagement = 2.5; // Default engagement rate
     
-    const avgViews = totalViews / videos.length;
-    const avgEngagement = ((totalLikes + totalComments) / totalViews) * 100;
+    if (videoIds) {
+      const videoStatsResponse = await axios.get(
+        `https://www.googleapis.com/youtube/v3/videos?part=statistics&id=${videoIds}&key=${apiKey}`
+      );
+
+      // Calculate average engagement rate
+      const videos = videoStatsResponse.data.items;
+      if (videos.length > 0) {
+        const totalViews = videos.reduce((sum, video) => sum + parseInt(video.statistics.viewCount || 0), 0);
+        const totalLikes = videos.reduce((sum, video) => sum + parseInt(video.statistics.likeCount || 0), 0);
+        const totalComments = videos.reduce((sum, video) => sum + parseInt(video.statistics.commentCount || 0), 0);
+        
+        if (totalViews > 0) {
+          avgEngagement = ((totalLikes + totalComments) / totalViews) * 100;
+        }
+      }
+    }
 
     const result = {
       platform: 'youtube',
@@ -53,7 +62,7 @@ router.get('/youtube/stats/:channelId', authenticateToken, async (req, res) => {
       subscribers: parseInt(stats.subscriberCount),
       totalViews: parseInt(stats.viewCount),
       totalVideos: parseInt(stats.videoCount),
-      avgViewsPerVideo: Math.round(avgViews),
+      avgViewsPerVideo: Math.round(parseInt(stats.viewCount) / parseInt(stats.videoCount)),
       engagementRate: parseFloat(avgEngagement.toFixed(2)),
       lastUpdated: new Date()
     };
@@ -63,16 +72,33 @@ router.get('/youtube/stats/:channelId', authenticateToken, async (req, res) => {
       $set: {
         'socialAccounts.$[elem].followers': result.subscribers,
         'socialAccounts.$[elem].engagementRate': result.engagementRate,
-        'socialAccounts.$[elem].lastSync': new Date()
+        'socialAccounts.$[elem].lastSync': new Date(),
+        'socialAccounts.$[elem].username': result.channelName
       }
     }, {
-      arrayFilters: [{ 'elem.platform': 'youtube' }]
+      arrayFilters: [{ 'elem.platform': 'youtube' }],
+      upsert: false
     });
 
     res.json(result);
   } catch (error) {
     console.error('YouTube API error:', error.response?.data || error.message);
-    res.status(500).json({ message: 'Failed to fetch YouTube data' });
+    
+    if (error.response?.status === 403) {
+      return res.status(403).json({ 
+        message: 'YouTube API quota exceeded or invalid API key. Please check your API key and quota limits.' 
+      });
+    }
+    
+    if (error.response?.status === 400) {
+      return res.status(400).json({ 
+        message: 'Invalid Channel ID format. Please check your YouTube Channel ID.' 
+      });
+    }
+    
+    res.status(500).json({ 
+      message: 'Failed to fetch YouTube data. Please try again later.' 
+    });
   }
 });
 
@@ -120,7 +146,7 @@ router.get('/instagram/stats', authenticateToken, async (req, res) => {
 router.post('/connect/:platform', authenticateToken, async (req, res) => {
   try {
     const { platform } = req.params;
-    const { username, accessToken, refreshToken } = req.body;
+    const { username, accessToken, refreshToken, followers, engagementRate, channelId } = req.body;
 
     const user = await User.findById(req.user.id);
     
@@ -132,9 +158,16 @@ router.post('/connect/:platform', authenticateToken, async (req, res) => {
       username,
       accessToken,
       refreshToken,
+      followers: followers || 0,
+      engagementRate: engagementRate || 0,
       isConnected: true,
       lastSync: new Date()
     };
+
+    // Add channelId for YouTube
+    if (platform === 'youtube' && channelId) {
+      accountData.channelId = channelId;
+    }
 
     if (existingAccountIndex >= 0) {
       user.socialAccounts[existingAccountIndex] = accountData;
